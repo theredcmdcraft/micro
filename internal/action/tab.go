@@ -107,22 +107,18 @@ func (t *TabList) HandleEvent(event tcell.Event) {
 		mx, my := e.Position()
 		switch e.Buttons() {
 		case tcell.Button1:
-			if my == t.Y && mx == 0 {
-				t.Scroll(-4)
-				return
-			} else if my == t.Y && mx == t.Width-1 {
-				t.Scroll(4)
-				return
-			}
-			if len(t.List) > 1 {
-				ind := t.LocFromVisual(buffer.Loc{mx, my})
-				if ind != -1 {
-					t.SetActive(ind)
-					return
+			if my == t.Y && len(t.List) > 1 {
+				if mx == 0 {
+					t.Scroll(-4)
+				} else if mx == t.Width-1 {
+					t.Scroll(4)
+				} else {
+					ind := t.LocFromVisual(buffer.Loc{mx, my})
+					if ind != -1 {
+						t.SetActive(ind)
+					}
 				}
-				if my == 0 {
-					return
-				}
+				return
 			}
 		case tcell.ButtonNone:
 			if t.List[t.Active()].release {
@@ -131,12 +127,12 @@ func (t *TabList) HandleEvent(event tcell.Event) {
 				return
 			}
 		case tcell.WheelUp:
-			if my == t.Y {
+			if my == t.Y && len(t.List) > 1 {
 				t.Scroll(4)
 				return
 			}
 		case tcell.WheelDown:
-			if my == t.Y {
+			if my == t.Y && len(t.List) > 1 {
 				t.Scroll(-4)
 				return
 			}
@@ -187,6 +183,17 @@ func (t *TabList) ResetMouse() {
 		for _, p := range tab.Panes {
 			if bp, ok := p.(*BufPane); ok {
 				bp.resetMouse()
+			}
+		}
+	}
+}
+
+// CloseTerms notifies term panes that a terminal job has finished.
+func (t *TabList) CloseTerms() {
+	for _, tab := range t.List {
+		for _, p := range tab.Panes {
+			if tp, ok := p.(*TermPane); ok {
+				tp.HandleTermClose()
 			}
 		}
 	}
@@ -340,6 +347,16 @@ func (t *Tab) SetActive(i int) {
 			p.SetActive(false)
 		}
 	}
+}
+
+// AddPane adds a pane at a given index
+func (t *Tab) AddPane(pane Pane, i int) {
+	if len(t.Panes) == i {
+		t.Panes = append(t.Panes, pane)
+		return
+	}
+	t.Panes = append(t.Panes[:i+1], t.Panes[i:]...)
+	t.Panes[i] = pane
 }
 
 // GetPane returns the pane with the given split index

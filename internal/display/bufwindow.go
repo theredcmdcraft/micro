@@ -58,7 +58,7 @@ func (w *BufWindow) SetBuffer(b *buffer.Buffer) {
 		if option == "softwrap" || option == "wordwrap" {
 			w.Relocate()
 			for _, c := range w.Buf.GetCursors() {
-				c.LastVisualX = c.GetVisualX()
+				c.LastWrappedVisualX = c.GetVisualX(true)
 			}
 		}
 	}
@@ -160,7 +160,7 @@ func (w *BufWindow) updateDisplayInfo() {
 
 	if w.bufWidth != prevBufWidth && w.Buf.Settings["softwrap"].(bool) {
 		for _, c := range w.Buf.GetCursors() {
-			c.LastVisualX = c.GetVisualX()
+			c.LastWrappedVisualX = c.GetVisualX(true)
 		}
 	}
 }
@@ -238,7 +238,7 @@ func (w *BufWindow) Relocate() bool {
 
 	// horizontal relocation (scrolling)
 	if !b.Settings["softwrap"].(bool) {
-		cx := activeC.GetVisualX()
+		cx := activeC.GetVisualX(false)
 		rw := runewidth.RuneWidth(activeC.RuneUnder(activeC.X))
 		if rw == 0 {
 			rw = 1 // tab or newline
@@ -392,28 +392,20 @@ func (w *BufWindow) displayBuffer() {
 	var matchingBraces []buffer.Loc
 	// bracePairs is defined in buffer.go
 	if b.Settings["matchbrace"].(bool) {
-		for _, bp := range buffer.BracePairs {
-			for _, c := range b.GetCursors() {
-				if c.HasSelection() {
-					continue
-				}
-				curX := c.X
-				curLoc := c.Loc
+		for _, c := range b.GetCursors() {
+			if c.HasSelection() {
+				continue
+			}
 
-				r := c.RuneUnder(curX)
-				rl := c.RuneUnder(curX - 1)
-				if r == bp[0] || r == bp[1] || rl == bp[0] || rl == bp[1] {
-					mb, left, found := b.FindMatchingBrace(bp, curLoc)
-					if found {
-						matchingBraces = append(matchingBraces, mb)
-						if !left {
-							if b.Settings["matchbracestyle"].(string) != "highlight" {
-								matchingBraces = append(matchingBraces, curLoc)
-							}
-						} else {
-							matchingBraces = append(matchingBraces, curLoc.Move(-1, b))
-						}
+			mb, left, found := b.FindMatchingBrace(c.Loc)
+			if found {
+				matchingBraces = append(matchingBraces, mb)
+				if !left {
+					if b.Settings["matchbracestyle"].(string) != "highlight" {
+						matchingBraces = append(matchingBraces, c.Loc)
 					}
+				} else {
+					matchingBraces = append(matchingBraces, c.Loc.Move(-1, b))
 				}
 			}
 		}

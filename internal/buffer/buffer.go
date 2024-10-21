@@ -64,10 +64,6 @@ var (
 	// BTStdout is a buffer that only writes to stdout
 	// when closed
 	BTStdout = BufType{6, false, true, true}
-
-	// ErrFileTooLarge is returned when the file is too large to hash
-	// (fastdirty is automatically enabled)
-	ErrFileTooLarge = errors.New("File is too large to hash")
 )
 
 // SharedBuffer is a struct containing info that is shared among buffers
@@ -90,6 +86,8 @@ type SharedBuffer struct {
 
 	// Settings customized by the user
 	Settings map[string]interface{}
+	// LocalSettings customized by the user for this buffer only
+	LocalSettings map[string]bool
 
 	Suggestions   []string
 	Completions   []string
@@ -330,6 +328,7 @@ func NewBuffer(r io.Reader, size int64, path string, startcursor Loc, btype BufT
 		// assigning the filetype.
 		settings := config.DefaultCommonSettings()
 		b.Settings = config.DefaultCommonSettings()
+		b.LocalSettings = make(map[string]bool)
 		for k, v := range config.GlobalSettings {
 			if _, ok := config.DefaultGlobalOnlySettings[k]; !ok {
 				// make sure setting is not global-only
@@ -368,6 +367,9 @@ func NewBuffer(r io.Reader, size int64, path string, startcursor Loc, btype BufT
 				case "dos":
 					ff = FFDos
 				}
+			} else {
+				// in case of autodetection treat as locally set
+				b.LocalSettings["fileformat"] = true
 			}
 
 			b.LineArray = NewLineArray(uint64(size), ff, reader)
@@ -554,7 +556,11 @@ func (b *Buffer) ReOpen() error {
 
 	err = b.UpdateModTime()
 	if !b.Settings["fastdirty"].(bool) {
-		calcHash(b, &b.origHash)
+		if len(data) > LargeFileThreshold {
+			b.Settings["fastdirty"] = true
+		} else {
+			calcHash(b, &b.origHash)
+		}
 	}
 	b.isModified = false
 	b.RelocateCursors()
@@ -649,37 +655,23 @@ func (b *Buffer) Size() int {
 }
 
 // calcHash calculates md5 hash of all lines in the buffer
-func calcHash(b *Buffer, out *[md5.Size]byte) error {
+func calcHash(b *Buffer, out *[md5.Size]byte) {
 	h := md5.New()
 
-	size := 0
 	if len(b.lines) > 0 {
-		n, e := h.Write(b.lines[0].data)
-		if e != nil {
-			return e
-		}
-		size += n
+		h.Write(b.lines[0].data)
 
 		for _, l := range b.lines[1:] {
-			n, e = h.Write([]byte{'\n'})
-			if e != nil {
-				return e
+			if b.Endings == FFDos {
+				h.Write([]byte{'\r', '\n'})
+			} else {
+				h.Write([]byte{'\n'})
 			}
-			size += n
-			n, e = h.Write(l.data)
-			if e != nil {
-				return e
-			}
-			size += n
+			h.Write(l.data)
 		}
-	}
-
-	if size > LargeFileThreshold {
-		return ErrFileTooLarge
 	}
 
 	h.Sum((*out)[:0])
-	return nil
 }
 
 func parseDefFromFile(f config.RuntimeFile, header *highlight.Header) *highlight.Def {
@@ -1089,7 +1081,7 @@ func (b *Buffer) ClearCursors() {
 	b.cursors = b.cursors[:1]
 	b.UpdateCursors()
 	b.curCursor = 0
-	b.GetActiveCursor().ResetSelection()
+	b.GetActiveCursor().Deselect(true)
 }
 
 // MoveLinesUp moves the range of lines up one row
@@ -1140,34 +1132,14 @@ var BracePairs = [][2]rune{
 	{'[', ']'},
 }
 
-// FindMatchingBrace returns the location in the buffer of the matching bracket
-// It is given a brace type containing the open and closing character, (for example
-// '{' and '}') as well as the location to match from
-// TODO: maybe can be more efficient with utf8 package
-// returns the location of the matching brace
-// if the boolean returned is true then the original matching brace is one character left
-// of the starting location
-func (b *Buffer) FindMatchingBrace(braceType [2]rune, start Loc) (Loc, bool, bool) {
-	curLine := []rune(string(b.LineBytes(start.Y)))
-	startChar := ' '
-	if start.X >= 0 && start.X < len(curLine) {
-		startChar = curLine[start.X]
-	}
-	leftChar := ' '
-	if start.X-1 >= 0 && start.X-1 < len(curLine) {
-		leftChar = curLine[start.X-1]
-	}
+func (b *Buffer) findMatchingBrace(braceType [2]rune, start Loc, char rune) (Loc, bool) {
 	var i int
-	if startChar == braceType[0] || (leftChar == braceType[0] && startChar != braceType[1]) {
+	if char == braceType[0] {
 		for y := start.Y; y < b.LinesNum(); y++ {
 			l := []rune(string(b.LineBytes(y)))
 			xInit := 0
 			if y == start.Y {
-				if startChar == braceType[0] {
-					xInit = start.X
-				} else {
-					xInit = start.X - 1
-				}
+				xInit = start.X
 			}
 			for x := xInit; x < len(l); x++ {
 				r := l[x]
@@ -1176,24 +1148,17 @@ func (b *Buffer) FindMatchingBrace(braceType [2]rune, start Loc) (Loc, bool, boo
 				} else if r == braceType[1] {
 					i--
 					if i == 0 {
-						if startChar == braceType[0] {
-							return Loc{x, y}, false, true
-						}
-						return Loc{x, y}, true, true
+						return Loc{x, y}, true
 					}
 				}
 			}
 		}
-	} else if startChar == braceType[1] || leftChar == braceType[1] {
+	} else if char == braceType[1] {
 		for y := start.Y; y >= 0; y-- {
 			l := []rune(string(b.lines[y].data))
 			xInit := len(l) - 1
 			if y == start.Y {
-				if startChar == braceType[1] {
-					xInit = start.X
-				} else {
-					xInit = start.X - 1
-				}
+				xInit = start.X
 			}
 			for x := xInit; x >= 0; x-- {
 				r := l[x]
@@ -1202,16 +1167,57 @@ func (b *Buffer) FindMatchingBrace(braceType [2]rune, start Loc) (Loc, bool, boo
 				} else if r == braceType[0] {
 					i--
 					if i == 0 {
-						if startChar == braceType[1] {
-							return Loc{x, y}, false, true
-						}
-						return Loc{x, y}, true, true
+						return Loc{x, y}, true
 					}
 				}
 			}
 		}
 	}
-	return start, true, false
+	return start, false
+}
+
+// If there is a brace character (for example '{' or ']') at the given start location,
+// FindMatchingBrace returns the location of the matching brace for it (for example '}'
+// or '['). The second returned value is true if there was no matching brace found
+// for given starting location but it was found for the location one character left
+// of it. The third returned value is true if the matching brace was found at all.
+func (b *Buffer) FindMatchingBrace(start Loc) (Loc, bool, bool) {
+	// TODO: maybe can be more efficient with utf8 package
+	curLine := []rune(string(b.LineBytes(start.Y)))
+
+	// first try to find matching brace for the given location (it has higher priority)
+	if start.X >= 0 && start.X < len(curLine) {
+		startChar := curLine[start.X]
+
+		for _, bp := range BracePairs {
+			if startChar == bp[0] || startChar == bp[1] {
+				mb, found := b.findMatchingBrace(bp, start, startChar)
+				if found {
+					return mb, false, true
+				}
+			}
+		}
+	}
+
+	if b.Settings["matchbraceleft"].(bool) {
+		// failed to find matching brace for the given location, so try to find matching
+		// brace for the location one character left of it
+		if start.X-1 >= 0 && start.X-1 < len(curLine) {
+			leftChar := curLine[start.X-1]
+			left := Loc{start.X - 1, start.Y}
+
+			for _, bp := range BracePairs {
+				if leftChar == bp[0] || leftChar == bp[1] {
+					mb, found := b.findMatchingBrace(bp, left, leftChar)
+					if found {
+						return mb, true, true
+					}
+				}
+			}
+		}
+	}
+
+	return start, false, false
 }
 
 // Retab changes all tabs to spaces or vice versa
